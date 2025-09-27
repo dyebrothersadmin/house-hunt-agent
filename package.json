@@ -1,0 +1,19 @@
+{
+  "name": "house-hunt-agent",
+  "version": "1.0.0",
+  "description": "Simple backend for Dye Brothers Group house-hunt agent",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3",
+    "pg": "^8.11.5",
+    "twilio": "^4.21.0",
+    "zod": "^3.23.8"
+  }
+}
