@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -21,14 +22,21 @@ const TWILIO_FROM = process.env.TWILIO_FROM_NUMBER;
 
 if (!DATABASE_URL) console.warn('DATABASE_URL not set');
 if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM) {
-  console.warn('Twilio vars missing (ok during initial deploy)');
+  console.warn('Twilio vars missing or incomplete (ok during initial deploy)');
 }
 
 // --- DB ---
 const pool = new Pool({ connectionString: DATABASE_URL });
 
-// --- Twilio ---
-const sms = twilio(TWILIO_SID, TWILIO_TOKEN);
+// --- Twilio (guarded init) ---
+let sms = null;
+if (TWILIO_SID && TWILIO_TOKEN) {
+  try {
+    sms = twilio(TWILIO_SID, TWILIO_TOKEN);
+  } catch (e) {
+    console.warn('Failed to init Twilio client:', e.message);
+  }
+}
 
 // --- Helpers ---
 const nowPlus = mins => new Date(Date.now() + mins * 60 * 1000);
@@ -43,8 +51,8 @@ async function upsertBuyerByPhone(phone) {
 }
 
 // --- Healthcheck ---
-app.get('/', (req, res) => res.send('Agent API OK'));
-app.get('/health', (req, res) => res.json({ ok: true }));
+app.get('/', (_req, res) => res.send('Agent API OK'));
+app.get('/health', (_req, res) => res.json({ ok: true }));
 
 // --- OTP: send ---
 app.post('/auth/send-otp', async (req, res) => {
@@ -60,12 +68,14 @@ app.post('/auth/send-otp', async (req, res) => {
       [phone, code, nowPlus(10)]
     );
 
-    if (TWILIO_SID && TWILIO_TOKEN && TWILIO_FROM) {
+    if (sms && TWILIO_FROM) {
       await sms.messages.create({
         from: TWILIO_FROM,
         to: phone,
         body: `Dye Brothers Group code: ${code}. Reply STOP to opt out.`
       });
+    } else {
+      console.log(`[DEV] OTP for ${phone}: ${code}`);
     }
 
     res.json({ ok: true });
@@ -132,6 +142,9 @@ app.post('/agent/message', async (req, res) => {
     if (!buyerId || !message) return res.status(400).json({ error: 'buyerId and message required' });
 
     const extracted = naiveExtractCriteria(message);
+    // Optional validation (won’t throw unless dev wants strict mode)
+    try { CriteriaSchema.parse(extracted); } catch {}
+
     let saved = null;
 
     if (Object.keys(extracted).length) {
@@ -164,9 +177,9 @@ app.post('/agent/message', async (req, res) => {
   }
 });
 
-// --- Simple cron (no-op for now; placeholder for future matches) ---
+// --- Placeholder cron (for future listing alerts) ---
 cron.schedule('*/10 * * * *', async () => {
-  // Later: check new listings and send SMS alerts
+  // Later: check new listings in `listing` and SMS via Twilio
   // console.log('cron tick');
 });
 
