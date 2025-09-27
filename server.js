@@ -37,6 +37,96 @@ if (TWILIO_SID && TWILIO_TOKEN) {
     console.warn('Failed to init Twilio client:', e.message);
   }
 }
+// --- Inline widget loader (serves Max as /widget.js) ---
+app.get('/widget.js', (_req, res) => {
+  res.type('application/javascript').send(`(function(){
+    var API = 'https://house-hunt-agent.onrender.com';
+
+    // Create container
+    var wrap = document.createElement('div');
+    wrap.id = 'dbg-agent';
+    wrap.style.cssText = 'position:fixed;right:20px;bottom:20px;width:320px;height:480px;border:1px solid #ddd;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.12);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;z-index:9999';
+    wrap.innerHTML = '<div id="dbg-log" style="height:420px;overflow:auto;padding:12px"></div>\
+      <div style="display:flex;border-top:1px solid #eee">\
+        <input id="dbg-input" placeholder="Type here..." style="flex:1;border:0;padding:10px;outline:none" />\
+        <button id="dbg-send" style="border:0;padding:10px 12px;cursor:pointer;background:#111;color:#fff">Send</button>\
+      </div>';
+    document.body.appendChild(wrap);
+
+    var buyerId = localStorage.getItem('dbg_buyerId');
+    var $log = document.getElementById('dbg-log');
+    var $input = document.getElementById('dbg-input');
+    var $send = document.getElementById('dbg-send');
+
+    function say(who, text){
+      var el = document.createElement('div');
+      el.style.margin = '8px 0';
+      el.innerHTML = '<div style="font-weight:600">'+who+'</div><div>'+text+'</div>';
+      $log.appendChild(el);
+      $log.scrollTop = $log.scrollHeight;
+    }
+
+    function post(path, body){
+      return fetch(API + path, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      }).then(function(r){ return r.json(); });
+    }
+
+    function sendOTP(phone){
+      return post('/auth/send-otp', { phone: phone })
+        .then(function(){ 
+          say('Max', 'I just texted you a 6-digit code. Please type it here.');
+          localStorage.setItem('dbg_pendingPhone', phone);
+        })
+        .catch(function(){ say('Max','Hmm, that didn\\'t work. Try your phone like +13185551234.'); });
+    }
+
+    function verifyOTP(code){
+      var phone = localStorage.getItem('dbg_pendingPhone');
+      return post('/auth/check-otp', { phone: phone, code: code })
+        .then(function(j){
+          if (j.ok){
+            buyerId = j.buyerId;
+            localStorage.setItem('dbg_buyerId', buyerId);
+            say('Max', "Great! Tell me what you\\'re looking for (e.g., “$250000 - $450000, 3 bed, Sterlington”).");
+          } else {
+            say('Max', 'That code didn\\'t work. Please enter the 6-digit code again.');
+          }
+        });
+    }
+
+    function sendMessage(text){
+      return post('/agent/message', { buyerId: buyerId, message: text })
+        .then(function(j){ if (j.reply) say('Max', j.reply); });
+    }
+
+    $send.onclick = function(){
+      var text = ($input.value || '').trim();
+      if (!text) return;
+      say('You', text);
+
+      if (!buyerId){
+        var pending = localStorage.getItem('dbg_pendingPhone');
+        if (!pending) {
+          sendOTP(text);
+        } else {
+          verifyOTP(text);
+        }
+      } else {
+        sendMessage(text);
+      }
+      $input.value = '';
+    };
+
+    if (!buyerId) {
+      say('Max', "Hi! I\\'m Max 👋 I can text you new listings that match your search. What\\'s your phone number? (format: +1XXXXXXXXXX)");
+    } else {
+      say('Max', 'Welcome back! What would you like to adjust in your search today?');
+    }
+  })();`);
+});
 
 // --- Helpers ---
 const nowPlus = mins => new Date(Date.now() + mins * 60 * 1000);
