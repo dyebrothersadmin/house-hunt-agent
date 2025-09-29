@@ -42,29 +42,78 @@ app.get('/widget.js', (_req, res) => {
   res.type('application/javascript').send(`(function(){
     var API = 'https://house-hunt-agent.onrender.com';
 
-    // Create container
+    // --- State ---
+    var buyerId = localStorage.getItem('dbg_buyerId');
+    var pendingPhone = localStorage.getItem('dbg_pendingPhone');
+    var minimized = localStorage.getItem('dbg_min') === '1';
+
+    // --- Container & UI ---
     var wrap = document.createElement('div');
     wrap.id = 'dbg-agent';
-    wrap.style.cssText = 'position:fixed;right:20px;bottom:20px;width:320px;height:480px;border:1px solid #ddd;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.12);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;z-index:9999';
-    wrap.innerHTML = '<div id="dbg-log" style="height:420px;overflow:auto;padding:12px"></div>\
-      <div style="display:flex;border-top:1px solid #eee">\
-        <input id="dbg-input" placeholder="Type here..." style="flex:1;border:0;padding:10px;outline:none" />\
-        <button id="dbg-send" style="border:0;padding:10px 12px;cursor:pointer;background:#111;color:#fff">Send</button>\
-      </div>';
+    wrap.style.cssText = 'position:fixed;right:20px;bottom:20px;width:320px;height:480px;border:1px solid #ddd;border-radius:14px;overflow:hidden;background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.12);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;z-index:9999';
+
+    var header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #eee;background:#fafafa';
+    header.innerHTML = '<div style="font-weight:700">Max — Your House-Hunt Agent</div>\
+    <div>\
+      <button id="dbg-min" title="Minimize" style="cursor:pointer;border:0;background:transparent;font-size:16px;line-height:1">—</button>\
+    </div>';
+
+    var log = document.createElement('div');
+    log.id = 'dbg-log';
+    log.style.cssText = 'height:350px;overflow:auto;padding:12px';
+
+    var typing = document.createElement('div');
+    typing.id = 'dbg-typing';
+    typing.style.cssText = 'font-size:12px;color:#666;padding:0 12px 8px;display:none';
+    typing.textContent = 'Max is typing…';
+
+    var inputRow = document.createElement('div');
+    inputRow.style.cssText = 'display:flex;border-top:1px solid #eee';
+    inputRow.innerHTML = '<input id="dbg-input" placeholder="Type here..." style="flex:1;border:0;padding:10px;outline:none" />\
+      <button id="dbg-send" style="border:0;padding:10px 12px;cursor:pointer;background:#111;color:#fff">Send</button>';
+
+    wrap.appendChild(header);
+    wrap.appendChild(log);
+    wrap.appendChild(typing);
+    wrap.appendChild(inputRow);
     document.body.appendChild(wrap);
 
-    var buyerId = localStorage.getItem('dbg_buyerId');
-    var $log = document.getElementById('dbg-log');
+    // Minimized pill
+    var pill = document.createElement('div');
+    pill.id = 'dbg-pill';
+    pill.textContent = 'Chat with Max';
+    pill.style.cssText = 'position:fixed;right:20px;bottom:20px;background:#111;color:#fff;border-radius:999px;padding:10px 14px;font-weight:600;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.15);z-index:9998;display:none';
+    document.body.appendChild(pill);
+
+    function setMinimized(on){
+      minimized = !!on;
+      localStorage.setItem('dbg_min', on ? '1' : '0');
+      wrap.style.display = on ? 'none' : 'block';
+      pill.style.display = on ? 'block' : 'none';
+    }
+    setMinimized(minimized);
+
+    // Elements
     var $input = document.getElementById('dbg-input');
     var $send = document.getElementById('dbg-send');
+    var $min = document.getElementById('dbg-min');
 
+    // --- Helpers ---
     function say(who, text){
-      var el = document.createElement('div');
-      el.style.margin = '8px 0';
-      el.innerHTML = '<div style="font-weight:600">'+who+'</div><div>'+text+'</div>';
-      $log.appendChild(el);
-      $log.scrollTop = $log.scrollHeight;
+      var block = document.createElement('div');
+      block.style.margin = '8px 0';
+      block.innerHTML = '<div style="font-weight:600;margin-bottom:2px">'+who+'</div><div>'+text+'</div>';
+      log.appendChild(block);
+      log.scrollTop = log.scrollHeight;
     }
+
+    function showTyping(on){
+      typing.style.display = on ? 'block' : 'none';
+      if (on) log.scrollTop = log.scrollHeight;
+    }
+
+    function pause(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
 
     function post(path, body){
       return fetch(API + path, {
@@ -74,35 +123,80 @@ app.get('/widget.js', (_req, res) => {
       }).then(function(r){ return r.json(); });
     }
 
-    function sendOTP(phone){
-      return post('/auth/send-otp', { phone: phone })
-        .then(function(){ 
-          say('Max', 'I just texted you a 6-digit code. Please type it here.');
-          localStorage.setItem('dbg_pendingPhone', phone);
-        })
-        .catch(function(){ say('Max','Hmm, that didn\\'t work. Try your phone like +13185551234.'); });
+    // Normalize phone: assume US +1 for 10-digit; accept 11-digit starting with 1; keep explicit + as-is
+    function normalizePhone(input){
+      var digits = (input||'').replace(/\\D/g,'');
+      if (!digits) return input;
+      if (digits.length === 10) return '+1' + digits;
+      if (digits.length === 11 && digits[0] === '1') return '+' + digits;
+      if (input.trim().charAt(0) !== '+') return '+' + digits;
+      return input;
     }
 
-    function verifyOTP(code){
+    function smartFollowupText(serverReply){
+      // Make replies warmer and more guided while keeping server’s next question
+      var leadIn = [
+        "Thanks for that 👍 ",
+        "Great, appreciate the detail. ",
+        "Got it — that helps a lot. ",
+        "Perfect, we\\'re zeroing in. "
+      ];
+      var pick = leadIn[Math.floor(Math.random()*leadIn.length)];
+      return pick + serverReply;
+    }
+
+    async function sendOTP(rawPhone){
+      var phone = normalizePhone(rawPhone);
+      try{
+        await post('/auth/send-otp', { phone: phone });
+        localStorage.setItem('dbg_pendingPhone', phone);
+        showTyping(true); await pause(600);
+        showTyping(false);
+        say('Max', 'I just texted a 6-digit code. Please enter it here to confirm it\\'s you. <div style="font-size:12px;color:#666;margin-top:4px">Tip: On a Twilio trial, texts only deliver to numbers verified in your Twilio console.</div>');
+      }catch(e){
+        say('Max', 'Hmm, that didn\\'t go through. Could you try your number again (e.g., 3185551234)?');
+      }
+    }
+
+    async function verifyOTP(code){
       var phone = localStorage.getItem('dbg_pendingPhone');
-      return post('/auth/check-otp', { phone: phone, code: code })
-        .then(function(j){
-          if (j.ok){
-            buyerId = j.buyerId;
-            localStorage.setItem('dbg_buyerId', buyerId);
-            say('Max', "Great! Tell me what you\\'re looking for (e.g., “$250000 - $450000, 3 bed, Sterlington”).");
-          } else {
-            say('Max', 'That code didn\\'t work. Please enter the 6-digit code again.');
-          }
-        });
+      try{
+        var j = await post('/auth/check-otp', { phone: phone, code: code });
+        if (j.ok){
+          buyerId = j.buyerId;
+          localStorage.setItem('dbg_buyerId', buyerId);
+          showTyping(true); await pause(700);
+          showTyping(false);
+          say('Max', "Thanks — you\\'re verified. I\\'ll remember your preferences next time.");
+          showTyping(true); await pause(800);
+          showTyping(false);
+          say('Max', "To dial this in fast: <br>• What\\'s your comfortable **budget range**? <br>• **Beds/Baths** minimum? <br>• Any **must-haves** (office, pool, garage)? <br>• Preferred **area or school zone** (e.g., Sterlington)?");
+        }else{
+          say('Max', 'That code didn\\'t work. Please enter the 6-digit code again.');
+        }
+      }catch(e){
+        say('Max', 'Something went wrong — please try the code again.');
+      }
     }
 
-    function sendMessage(text){
-      return post('/agent/message', { buyerId: buyerId, message: text })
-        .then(function(j){ if (j.reply) say('Max', j.reply); });
+    async function sendMessage(text){
+      try{
+        showTyping(true);
+        var j = await post('/agent/message', { buyerId: buyerId, message: text });
+        await pause(700);
+        showTyping(false);
+        if (j && j.reply) {
+          say('Max', smartFollowupText(j.reply));
+        } else {
+          say('Max', "Thanks! Anything else that\\'s important to you — commute time, lot size, HOA tolerance, or new vs. needs-work?");
+        }
+      }catch(e){
+        showTyping(false);
+        say('Max', 'I couldn\\'t process that — mind trying again?');
+      }
     }
 
-    $send.onclick = function(){
+    async function handleSend(){
       var text = ($input.value || '').trim();
       if (!text) return;
       say('You', text);
@@ -110,35 +204,42 @@ app.get('/widget.js', (_req, res) => {
       if (!buyerId){
         var pending = localStorage.getItem('dbg_pendingPhone');
         if (!pending) {
-          sendOTP(text);
+          await sendOTP(text);
         } else {
-          verifyOTP(text);
+          await verifyOTP(text);
         }
       } else {
-        sendMessage(text);
+        await sendMessage(text);
       }
       $input.value = '';
-    };
-
-    if (!buyerId) {
-      say('Max', "Hi! I\\'m Max 👋 I can text you new listings that match your search. What\\'s your phone number? (format: +1XXXXXXXXXX)");
-    } else {
-      say('Max', 'Welcome back! What would you like to adjust in your search today?');
     }
+
+    // Events
+    $send.onclick = handleSend;
+    $input.addEventListener('keydown', function(ev){
+      if (ev.key === 'Enter'){ ev.preventDefault(); handleSend(); }
+    });
+    $min.onclick = function(){ setMinimized(true); };
+    pill.onclick = function(){ setMinimized(false); };
+
+    // Opening greeting
+    (async function greet(){
+      if (!buyerId){
+        showTyping(true); await pause(500);
+        showTyping(false);
+        say('Max', "Hi! I\\'m Max — I **hunt houses so you don\\'t have to**. I\\'ll learn your must-haves (budget, beds/baths, area, commute), keep your profile on file, and **text you** the moment something new hits that fits.");
+        showTyping(true); await pause(900);
+        showTyping(false);
+        say('Max', "What\\'s your phone number so I can verify and remember you? You can just type 10 digits — I\\'ll add +1 for you.");
+      }else{
+        showTyping(true); await pause(400);
+        showTyping(false);
+        say('Max', 'Welcome back! Want to adjust **budget**, **beds/baths**, **area/school**, or add any **must-haves**?');
+      }
+    })();
   })();`);
 });
 
-// --- Helpers ---
-const nowPlus = mins => new Date(Date.now() + mins * 60 * 1000);
-async function upsertBuyerByPhone(phone) {
-  const q = `
-    insert into buyer (phone, phone_verified)
-    values ($1, false)
-    on conflict (phone) do update set phone=excluded.phone
-    returning *`;
-  const { rows } = await pool.query(q, [phone]);
-  return rows[0];
-}
 
 // --- Healthcheck ---
 app.get('/', (_req, res) => res.send('Agent API OK'));
